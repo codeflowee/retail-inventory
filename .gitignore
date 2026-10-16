@@ -1,0 +1,17 @@
+# RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# knitr / rmarkdown intermediates
+*_cache/
+*_files/
+*.knit.md
+*.utf8.md
+
+# macOS
+.DS_Store
+
+# Downloaded archives
+*.zip

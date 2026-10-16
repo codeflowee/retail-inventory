@@ -1,0 +1,551 @@
+---
+title: "Jaekaupluste müügimahtude ja laovarude kirjeldav analüüs"
+
+subtitle: "Seminaritöö 1 õppeaines RAM0580 Andmeanalüüs"
+
+author: "<br>Koostaja: Andre Toodre <br>"
+
+date: "Esitatud: 17.10.2026 <br>"
+
+
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    toc_float:
+      collapsed: false
+    number_sections: true
+    theme: default
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+<br><br>
+
+# Sissejuhatus
+
+## Andmestiku kirjeldus
+
+Andmestik **Retail Store Inventory Forecasting Dataset** pärineb portaalist [Kaggle](https://www.kaggle.com/datasets/anirudhchauhan/retail-store-inventory-forecasting-dataset) (autor Anirudh Chauhan). Andmestik sisaldab jaekaupluste igapäevaseid müügi- ja laoandmeid ajavahemikus 01.01.2022 – 01.01.2024. Iga rida on ühe toote andmed ühes kaupluses ühel päeval. Andmestik on **sünteetiline**, st andmed on genereeritud müügi prognoosimise harjutamiseks ega pärine päris kauplustest.
+
+Tunnuste kirjeldus:
+
+| Tunnus | Kirjeldus | Tüüp |
+|---|---|---|
+| Date | Kuupäev | kuupäev |
+| Store ID | Kaupluse tunnus (S001–S005) | kategoriaalne |
+| Product ID | Toote tunnus (P0001–P0020) | kategoriaalne |
+| Category | Tootekategooria (Clothing, Electronics, Furniture, Groceries, Toys) | kategoriaalne |
+| Region | Piirkond (East, North, South, West) | kategoriaalne |
+| Inventory Level | Laoseis päeva alguses (tk) | arvuline |
+| Units Sold | Päeva jooksul müüdud kogus (tk) | arvuline |
+| Units Ordered | Tellitud kogus (tk) | arvuline |
+| Demand Forecast | Prognoositud nõudlus (tk) | arvuline |
+| Price | Toote hind | arvuline |
+| Discount | Allahindlus (%) | arvuline |
+| Weather Condition | Ilm (Cloudy, Rainy, Snowy, Sunny) | kategoriaalne |
+| Holiday/Promotion | Kas päev oli püha või kampaaniapäev (0 = ei, 1 = jah) | kategoriaalne |
+| Competitor Pricing | Konkurendi hind samale tootele | arvuline |
+| Seasonality | Aastaaeg (Autumn, Spring, Summer, Winter) | kategoriaalne |
+
+## Uurimiseesmärk
+
+Töö eesmärk on uurida, millest sõltub **toote päevane müügimaht** (`Units.Sold`). Kas müük on seotud laoseisu, hinna, allahindluse, tootekategooria, piirkonna, ilma, kampaaniate või aastaajaga? Tulevikus saaks nende tegurite põhjal müüki prognoosida ja laovarusid planeerida.
+
+Seminaritöö 1 eesmärk on andmete kirjeldav analüüs.
+
+<br><br>
+
+# Andmete lugemine ja ülevaade andmetest
+
+Loeme andmed R-i sisse:
+
+```{r}
+retail <- read.csv("retail_store_inventory.csv")
+```
+
+Andmetabel (esimesed 1000 rida, sest täistabel teeks HTML-faili liiga suureks):
+
+```{r}
+library(DT)
+datatable(head(retail, 1000), options = list(scrollX = 1, pageLength = 5, searching = TRUE, scroller = TRUE, scrollY = 200))
+```
+
+Ülevaade andmestiku struktuurist:
+
+```{r}
+str(retail)
+```
+
+Arvuliste ja mittearvuliste tunnuste arv:
+
+```{r}
+n_numeric <- sum(sapply(retail, is.numeric))
+n_non_numeric <- ncol(retail) - n_numeric
+c(objects = nrow(retail), variables = ncol(retail), numeric = n_numeric, non_numeric = n_non_numeric)
+```
+
+Andmestikus on **`r nrow(retail)` objekti** ja **`r ncol(retail)` tunnust**. R loeb neist **`r n_numeric` tunnust arvuliseks** (*int* ja *num*) ja **`r n_non_numeric` mittearvuliseks** (*chr*). R muudab lugemisel tunnuste nimedes tühikud ja kaldkriipsud punktideks (nt `Store ID` → `Store.ID`).
+
+R-i määratud tüübid ei vasta alati tunnuste sisule:
+
+* `Date` on tekst (*chr*), aga see on kuupäev. Sellest saab tuletada kuu ja aastaaja.
+* `Holiday.Promotion` on tüübilt arvuline (*int*), aga sisult kahe väärtusega (0/1) **kategoriaalne** tunnus.
+* `Discount` on arvuline, aga sellel on ainult `r length(unique(retail$Discount))` väärtust (`r paste(sort(unique(retail$Discount)), collapse = ", ")` %). Jätame selle arvuliseks, sest väärtused on järjestatud ja nende vahed on võrdsed.
+
+## Projekti eesmärk ja tunnuste valik
+
+**Sihttunnus** on `Units.Sold`, toote päevane müügimaht tükkides. See on arvuline tunnus vahemikus `r min(retail$Units.Sold)`–`r max(retail$Units.Sold)`. Kuna erinevaid väärtusi on palju (`r length(unique(retail$Units.Sold))`), käsitleme seda pideva tunnusena.
+
+Eeldame, et müük sõltub järgmistest teguritest:
+
+* laoseis (`Inventory.Level`): müüa saab ainult seda, mis on laos;
+* hind, allahindlus ja konkurendi hind (`Price`, `Discount`, `Competitor.Pricing`);
+* tootekategooria, kauplus ja piirkond (`Category`, `Store.ID`, `Region`);
+* välised tegurid: ilm, pühad/kampaaniad, aastaaeg (`Weather.Condition`, `Holiday.Promotion`, `Seasonality`).
+
+`Units.Ordered` (tellitud kogus) on tellimuse otsus, mitte müügi põhjus. Jätame selle kirjeldavasse analüüsi, et näha, kas tellimused on müügiga seotud. Tunnus `Product.ID` jääb samuti alles: 20 toodet ei ole liiga palju kategooriaid.
+
+`Demand.Forecast` (nõudluse prognoos) vajab eraldi kontrolli:
+
+```{r}
+cor(retail$Units.Sold, retail$Demand.Forecast)
+summary(retail$Demand.Forecast - retail$Units.Sold)
+```
+
+Prognoos erineb tegelikust müügist ainult vahemikus −10 kuni +20 ühikut (r = `r round(cor(retail$Units.Sold, retail$Demand.Forecast), 3)`). Prognoos on seega arvutatud tegeliku müügi põhjal ega ole müügist sõltumatu tegur. Mudelis tähendaks selle kasutamine andmeleket: me ei tea päeva müüki enne, kui päev on läbi. Lisaks on prognoosides negatiivseid väärtusi. Käsitleme neid puhastamise osas.
+
+### Tunnuste teisendused
+
+**Kuupäev.** Teisendame `Date` kuupäevaks ja tuletame sellest kuu (`Month`) ja aastaaja (`Season`):
+
+```{r}
+retail$Date <- as.Date(retail$Date)
+range(retail$Date)
+table(format(retail$Date, "%Y"))
+```
+
+Aasta 2024 kohta on andmed ainult ühe päeva (01.01.2024) kohta. Seetõttu ei kasuta me aastat eraldi tunnusena.
+
+```{r}
+retail$Month <- format(retail$Date, "%m")
+month_num <- as.integer(retail$Month)
+retail$Season <- ifelse(month_num %in% c(12, 1, 2), "Winter",
+                 ifelse(month_num %in% 3:5, "Spring",
+                 ifelse(month_num %in% 6:8, "Summer", "Autumn")))
+```
+
+**Aastaaja kontroll.** Võrdleme kuupäevast tuletatud aastaaega andmestikus oleva tunnusega `Seasonality`:
+
+```{r}
+table(Season_from_date = retail$Season, Seasonality = retail$Seasonality)
+```
+
+Tunnus `Seasonality` **ei vasta kuupäevale**: igal aastaajal on peaaegu võrdselt kõiki nelja `Seasonality` väärtust. Näiteks talvekuudel on „Summer" sama sageli kui „Winter". Tunnus on genereeritud juhuslikult. Jätame `Seasonality` välja ja kasutame kuupäevast tuletatud tunnust `Season`.
+
+**Kaupluse ja piirkonna ning toote ja kategooria kontroll.** Sarnast vastuolu on näha ka teistes tunnustes:
+
+```{r}
+table(retail$Store.ID, retail$Region)
+head(table(retail$Product.ID, retail$Category), 5)
+```
+
+Sama kauplus asub andmetes kõigis neljas piirkonnas ja sama toode kuulub kõigisse viide kategooriasse. Päris andmetes on kauplusel üks asukoht ja tootel üks kategooria. Jätame need tunnused alles, aga peame arvestama, et nende seos müügiga ei pruugi olla sisuliselt tõlgendatav.
+
+**Loogikakontroll.** Müük ei saa ületada laoseisu:
+
+```{r}
+sum(retail$Units.Sold > retail$Inventory.Level)
+```
+
+Selliseid objekte ei ole, seega on see tingimus täidetud.
+
+Eemaldame analüüsiks mittevajalikud tunnused: `Seasonality` (vastuoluline) ja `Date` (kuupäevast vajalik info on nüüd tunnustes `Month` ja `Season`).
+
+```{r}
+retail <- retail[, !(names(retail) %in% c("Seasonality", "Date"))]
+```
+
+Ülevaade andmestikust paketi **skimr** funktsiooniga **skim()**:
+
+```{r}
+library(skimr)
+skim(retail)
+```
+
+**Jaotuste kommentaar**
+
+* **Arvtunnused.** `Inventory.Level`, `Units.Ordered`, `Price`, `Discount` ja `Competitor.Pricing` on ligikaudu **ühtlase jaotusega**: histogrammid on peaaegu tasased, keskmine ja mediaan praktiliselt võrdsed. Jaotused on seega sümmeetrilised. See on genereeritud andmetele omane, päris müügiandmed on harva nii ühtlased. Sihttunnus `Units.Sold` ja `Demand.Forecast` on **paremale kaldu**: väikseid müügikoguseid on rohkem kui suuri, keskmine (`r round(mean(retail$Units.Sold), 1)`) on suurem kui mediaan (`r median(retail$Units.Sold)`).
+* **Kategoriaalsed tunnused** on erakordselt **ühtlaselt jaotunud**: igas kategoorias on ligikaudu sama palju objekte. Näiteks on igas tootekategoorias ~14 600 rida, igas piirkonnas ~18 250 rida ja pühade/kampaaniate päevi ~50%. Kaupluste kaupa on ridu täpselt võrdselt (14 620).
+
+<br><br>
+
+# Andmestiku puhastamine
+
+## Duplikaatide kontroll
+
+Duplikaatide kontroll funktsiooniga **duplicated()**:
+
+```{r}
+sum(duplicated(retail))
+```
+
+Andmestikus on `r sum(duplicated(retail))` duplikaati. Kontrollime ka, kas sama kaupluse, toote ja päeva kombinatsioon esineb mitu korda. See oleks sisuline duplikaat isegi siis, kui ülejäänud väärtused erinevad. Kuupäev on eemaldatud, seega kontrollime seda algandmetest:
+
+```{r}
+raw_keys <- read.csv("retail_store_inventory.csv")[, c("Date", "Store.ID", "Product.ID")]
+sum(duplicated(raw_keys))
+```
+
+Iga kaupluse, toote ja päeva kombinatsioon esineb täpselt üks kord (5 kauplust × 20 toodet × 731 päeva = `r 5 * 20 * 731` rida). Eemaldamise kood rakendatakse igaks juhuks:
+
+```{r}
+retail <- retail[!duplicated(retail), ]
+```
+
+## Puuduvate väärtuste kontroll
+
+Puuduvate väärtuste olemasolu kontrollimine funktsiooni **is.na()** abil:
+
+```{r}
+sum(is.na(retail))
+```
+
+Kontrollime ka tühje lahtreid tekstitunnustes:
+
+```{r}
+char_vars <- names(Filter(is.character, retail))
+sapply(retail[, char_vars], function(x) sum(x == ""))
+```
+
+Andmestikus ei ole ei `NA` väärtusi ega tühje lahtreid. Sisuliselt puuduvad väärtused võivad aga olla peidetud võimatute väärtuste taha. Kontrollime arvtunnuste miinimume:
+
+```{r}
+sapply(Filter(is.numeric, retail), min)
+```
+
+Negatiivne on ainult `Demand.Forecast` (min `r min(retail$Demand.Forecast)`). Negatiivne nõudluse prognoos on võimatu, seega on need väärtused **vigased**. Loeme need kokku:
+
+```{r}
+sum(retail$Demand.Forecast < 0)
+```
+
+Asendame vigased väärtused standardse sümboliga `NA`:
+
+```{r}
+retail$Demand.Forecast[retail$Demand.Forecast < 0] <- NA
+```
+
+Puuduvate väärtuste arv pärast asendust:
+
+```{r}
+sum(is.na(retail))
+```
+
+Andmestikus on nüüd `r sum(is.na(retail))` puuduvat väärtust.
+
+Puuduvate väärtustega objektide arvu leiame funktsiooniga **complete.cases()**:
+
+```{r}
+sum(!complete.cases(retail))
+```
+
+Puuduvate väärtustega objekte on `r sum(!complete.cases(retail))` (`r round(100 * mean(!complete.cases(retail)), 2)`% andmestikust).
+
+Uurime, mitu puuduvat väärtust on andmestiku igas veerus:
+
+```{r}
+na_by_var <- apply(is.na(retail), 2, sum)
+na_by_var
+```
+
+Puuduvad väärtused on ainult tunnuses `Demand.Forecast`. Vaatame, milliste objektidega on tegu:
+
+```{r}
+summary(retail$Units.Sold[is.na(retail$Demand.Forecast)])
+```
+
+Puuduva prognoosiga on ainult väga väikese müügiga päevad (müük `r min(retail$Units.Sold[is.na(retail$Demand.Forecast)])`–`r max(retail$Units.Sold[is.na(retail$Demand.Forecast)])` tk). Kui need objektid eemaldada, kaoks sihttunnuse jaotusest peaaegu kogu madalaim osa ja jaotus nihkuks. Seepärast jätame välja **tunnuse** `Demand.Forecast`, mitte objektid. See tunnus ei sobi ka sisuliselt müügi selgitamiseks, sest see on arvutatud tegeliku müügi põhjal (vt eespool).
+
+```{r}
+retail <- retail[, names(retail) != "Demand.Forecast"]
+```
+
+Mittearvulistes tunnustes puuduvaid väärtusi ei olnud, seega asendust väärtusega `"Unknown"` ei ole vaja teha. Kood jääb siiski alles juhuks, kui andmed muutuvad:
+
+```{r}
+retail[, char_vars][is.na(retail[, char_vars])] <- "Unknown"
+```
+
+Pärast väljajätmist puuduvate väärtustega objektide arv:
+
+```{r}
+sum(!complete.cases(retail))
+```
+
+Puuduvate väärtustega objekte enam ei ole. Eemaldamise kood jääb igaks juhuks alles:
+
+```{r}
+retail <- na.omit(retail)
+```
+
+<br><br>
+
+# Faktortunnuste moodustamine
+
+Teisendame *chr*-tüüpi tunnused faktoriteks:
+
+```{r}
+retail <- as.data.frame(unclass(retail), stringsAsFactors = TRUE)
+```
+
+`Holiday.Promotion` on kodeeritud arvudega 0/1. Teisendame selle samuti faktoriks ja anname kategooriatele selged nimed. Aastaaegadele seame loogilise järjekorra:
+
+```{r}
+retail$Holiday.Promotion <- factor(retail$Holiday.Promotion, levels = c(0, 1), labels = c("No", "Yes"))
+retail$Season <- factor(retail$Season, levels = c("Winter", "Spring", "Summer", "Autumn"))
+```
+
+Ülevaade puhastatud andmestikust:
+
+```{r}
+skim(retail)
+```
+
+```{r}
+n_numeric <- sum(sapply(retail, is.numeric))
+c(objects = nrow(retail), variables = ncol(retail), numeric = n_numeric, non_numeric = ncol(retail) - n_numeric)
+```
+
+Puhastatud andmestikus on **`r nrow(retail)` objekti** ja **`r ncol(retail)` tunnust**: **`r n_numeric` arvulist** (`r paste(names(Filter(is.numeric, retail)), collapse = ", ")`) ja **`r ncol(retail) - n_numeric` mittearvulist** (`r paste(names(Filter(is.factor, retail)), collapse = ", ")`).
+
+<br><br>
+
+# Andmete kirjeldav analüüs
+
+## Seoste kirjeldav analüüs
+
+### Seosed arvuliste tunnuste vahel
+
+Andmestikus on üle 70 000 objekti. Kõigi punktide korral muutuksid diagrammid ühtlaseks laiguks, seetõttu joonistame hajuvusdiagrammid juhuvalimi põhjal (5000 objekti):
+
+```{r, fig.width=10, fig.height=9}
+set.seed(2026)
+plot_sample <- retail[sample(nrow(retail), 5000), ]
+plot(Filter(is.numeric, plot_sample), col = "blue", pch = 20, cex = 0.3)
+```
+
+Korrelatsioonikordajad kogu andmestiku põhjal:
+
+```{r}
+round(cor(Filter(is.numeric, retail)), 3)
+```
+
+Sihttunnusega `Units.Sold` on seotud ainult **laoseis** `Inventory.Level` (r = `r round(cor(retail$Units.Sold, retail$Inventory.Level), 2)`). Seos on positiivne: **mida suurem on laoseis, seda rohkem müüakse**. Hajuvusdiagrammil on näha seose eripärane kuju. Punktid täidavad kolmnurga, mille ülemine serv on joon `Units.Sold = Inventory.Level`. Müük ei saa laoseisu ületada, aga võib olla ükskõik milline väärtus nullist laoseisuni. Seega on laoseis müügi ülempiir, mitte täpne ennustaja.
+
+Teiste arvtunnustega (`Units.Ordered`, `Price`, `Discount`, `Competitor.Pricing`) sihttunnus seotud ei ole: korrelatsioonid on nullilähedased ja hajuvusdiagrammid on struktuurita pilved. Eriti üllatav on, et **hind ja allahindlus ei mõjuta müüki**. Päris andmetes peaks madalam hind või suurem allahindlus müüki suurendama. Arvtunnuste vahel on veel üks tugev seos: `Price` ja `Competitor.Pricing` (r = `r round(cor(retail$Price, retail$Competitor.Pricing), 3)`). Konkurendi hind on peaaegu sama mis meie hind, seega on need kaks tunnust sisuliselt topelt.
+
+### Sihttunnuse seos mittearvuliste tunnustega
+
+```{r, fig.width=10, fig.height=20}
+factor_vars <- names(Filter(is.factor, retail))
+par(mfrow = c(ceiling(length(factor_vars) / 2), 2), mar = c(6, 4, 3, 1))
+for (i in 1:length(factor_vars)) {
+  boxplot(retail$Units.Sold ~ retail[, factor_vars[i]], xlab = "", ylab = "",
+          col = "skyblue", main = paste("Units.Sold vs", factor_vars[i]),
+          cex.axis = 0.7, cex.main = 0.9, las = 2)
+}
+```
+
+Müügi keskmine iga mittearvulise tunnuse kategooriates:
+
+```{r}
+for (v in factor_vars) {
+  cat("\n", v, "\n")
+  print(round(tapply(retail$Units.Sold, retail[, v], mean), 1))
+}
+```
+
+Kõigi mittearvuliste tunnuste puhul on karpdiagrammid **praktiliselt identsed**: mediaanid, kvartiilid ja haare on kõigis kategooriates samad. Rühmakeskmised erinevad kõige rohkem ~6 ühiku võrra (toodete ja kuude vahel), enamasti vaid 1–3 ühikut, kuigi müügi standardhälve on ~`r round(sd(retail$Units.Sold))` ühikut. Seega ei ole müük andmete järgi seotud tootekategooria, kaupluse, piirkonna, ilma, kampaania, kuu ega aastaajaga.
+
+Sisuliselt on see tulemus ebaloogiline. Päris kaupluses peaks näiteks kampaaniapäeval müük kasvama ja toidukaupu müüdama rohkem kui mööblit. Tulemus kinnitab, et andmestik on genereeritud nii, et kategoriaalsed tunnused on müügist sõltumatud. Andmestiku ainus oluline müüki selgitav tegur on laoseis.
+
+<br><br>
+
+## Valitud tunnuste kirjeldav analüüs
+
+Analüüsiks valime:
+
+* sihttunnus **`Units.Sold`** (päevane müügimaht);
+* arvuline tunnus **`Inventory.Level`** (laoseis), mis on ainus sihttunnusega seotud arvtunnus;
+* mittearvuline tunnus **`Category`** (tootekategooria). Ärilises mõttes peaks see kõige rohkem müüki mõjutama, ja uurime, kas see nii ka on.
+
+### Mittearvulise tunnuse `Category` kirjeldav analüüs
+
+Sagedustabel (absoluutsed ja suhtelised sagedused):
+
+```{r}
+category_freq <- table(retail$Category)
+data.frame(count = as.vector(category_freq),
+           relative = round(as.vector(prop.table(category_freq)), 4),
+           row.names = names(category_freq))
+```
+
+Suhteliste sageduste tulpdiagramm:
+
+```{r}
+bp <- barplot(prop.table(category_freq), col = "skyblue", ylim = c(0, 0.25),
+              main = "Product category", ylab = "Relative frequency")
+text(bp, prop.table(category_freq), labels = paste0(round(100 * prop.table(category_freq), 2), "%"), pos = 3)
+```
+
+Kategooriad on **peaaegu täiesti ühtlaselt** esindatud: igaühe osakaal on ligikaudu 20%. Kõige sagedasem on `r names(which.max(category_freq))` (`r round(100 * max(prop.table(category_freq)), 2)`%), kõige harvem `r names(which.min(category_freq))` (`r round(100 * min(prop.table(category_freq)), 2)`%). Vahe on alla 0,3 protsendipunkti, seega selgelt tüüpilist ega harva esinevat kategooriat ei ole.
+
+### Sihttunnuse `Units.Sold` kirjeldav analüüs
+
+Abifunktsioon arvkarakteristikute leidmiseks:
+
+```{r}
+describe_numeric <- function(x) {
+  skewness <- mean((x - mean(x))^3) / sd(x)^3
+  round(c(n = length(x), mean = mean(x), sd = sd(x), min = min(x),
+          Q1 = unname(quantile(x, 0.25)), median = median(x), Q3 = unname(quantile(x, 0.75)),
+          max = max(x), IQR = IQR(x), skewness = skewness,
+          n_outliers = length(boxplot.stats(x)$out)), 2)
+}
+```
+
+Funktsioon suhteliste sageduste histogrammi joonistamiseks:
+
+```{r}
+plot_relative_hist <- function(x, breaks, main, xlab) {
+  h <- hist(x, breaks = breaks, plot = FALSE)
+  h$counts <- h$counts / sum(h$counts)
+  plot(h, col = "skyblue", main = main, xlab = xlab, ylab = "Relative frequency",
+       ylim = c(0, 1.1 * max(h$counts)), yaxt = "n")
+  axis(2, at = pretty(c(0, max(h$counts))), las = 1)
+  invisible(h)
+}
+```
+
+Arvkarakteristikud:
+
+```{r}
+describe_numeric(retail$Units.Sold)
+```
+
+Histogramm ja karpdiagramm:
+
+```{r, fig.width=10, fig.height=5}
+par(mfrow = c(1, 2))
+plot_relative_hist(retail$Units.Sold, breaks = seq(0, 500, by = 25),
+                   main = "Units sold", xlab = "Units sold per day")
+boxplot(retail$Units.Sold, col = "skyblue", horizontal = TRUE, main = "Units sold", xlab = "Units sold per day")
+```
+
+Sagedustabel:
+
+```{r}
+sold_classes <- cut(retail$Units.Sold, breaks = seq(0, 500, by = 50), include.lowest = TRUE, right = FALSE)
+sold_freq <- table(sold_classes)
+data.frame(count = as.vector(sold_freq), relative = round(as.vector(prop.table(sold_freq)), 4),
+           row.names = names(sold_freq))
+```
+
+Suurima müügiga objektid:
+
+```{r}
+head(retail[order(-retail$Units.Sold), c("Units.Sold", "Inventory.Level", "Category", "Store.ID", "Month")], 10)
+```
+
+```{r, include=FALSE}
+sold_stats <- describe_numeric(retail$Units.Sold)
+sold_whisker <- max(boxplot.stats(retail$Units.Sold)$stats)
+```
+
+* **Sümmeetria.** Müügi jaotus on **paremale kaldu** (asümmeetriakordaja `r sold_stats["skewness"]`). Väikseid päevamüüke on palju, suuri vähem. Histogrammi järgi on sagedus suurim väikseimate väärtuste juures ja kahaneb müügikoguse kasvades ühtlaselt, peaaegu lineaarselt. Põhjus on selles, et müük on piiratud laoseisuga. Suur müük on võimalik ainult siis, kui laoseis on suur.
+* **Keskmine ja mediaan.** Keskmine müük on `r sold_stats["mean"]` tk, mediaan `r sold_stats["median"]` tk. Keskmine on mediaanist suurem, mis kinnitab paremale kaldu jaotust.
+* **Tüüpilised väärtused.** Pooled päevamüügid jäävad vahemikku `r sold_stats["Q1"]`–`r sold_stats["Q3"]` tk (Q1–Q3). Kõige sagedasem müügiklass on `r names(which.max(sold_freq))` tk (`r round(100 * max(prop.table(sold_freq)), 1)`% päevadest).
+* **Min ja max.** Min `r sold_stats["min"]` tk (müügita päevi on `r sum(retail$Units.Sold == 0)`), max `r sold_stats["max"]` tk.
+* **Erindid.** Karpdiagrammi reegli (1,5 × IQR) järgi on erindeid **`r sold_stats["n_outliers"]`** (`r round(100 * sold_stats["n_outliers"] / nrow(retail), 2)`%). Need on päevad, mil müüdi üle `r sold_whisker` tk.
+* **Probleemsed objektid.** Suurima müügiga päevadel oli alati ka suur laoseis (lähedane maksimumile 500) ja peaaegu kogu laoseis müüdi ära. Need objektid on loogilised ega ole vead. Probleemsed ei ole ka müügita päevad, mida võib päris kaupluses samuti ette tulla.
+
+### Arvulise tunnuse `Inventory.Level` kirjeldav analüüs
+
+Arvkarakteristikud:
+
+```{r}
+describe_numeric(retail$Inventory.Level)
+```
+
+Histogramm ja karpdiagramm:
+
+```{r, fig.width=10, fig.height=5}
+par(mfrow = c(1, 2))
+plot_relative_hist(retail$Inventory.Level, breaks = seq(50, 500, by = 25),
+                   main = "Inventory level", xlab = "Inventory level (units)")
+boxplot(retail$Inventory.Level, col = "skyblue", horizontal = TRUE, main = "Inventory level", xlab = "Inventory level (units)")
+```
+
+Sagedustabel:
+
+```{r}
+inventory_classes <- cut(retail$Inventory.Level, breaks = seq(50, 500, by = 50), include.lowest = TRUE)
+inventory_freq <- table(inventory_classes)
+data.frame(count = as.vector(inventory_freq), relative = round(as.vector(prop.table(inventory_freq)), 4),
+           row.names = names(inventory_freq))
+```
+
+```{r, include=FALSE}
+inv_stats <- describe_numeric(retail$Inventory.Level)
+```
+
+* **Sümmeetria.** Laoseisu jaotus on **sümmeetriline** (asümmeetriakordaja `r inv_stats["skewness"]`, praktiliselt 0) ja **ühtlane**. Histogrammi kõik tulbad on peaaegu sama kõrgusega, iga 50-ühikuline vahemik sisaldab ~11% objektidest.
+* **Keskmine ja mediaan.** Keskmine `r inv_stats["mean"]` ja mediaan `r inv_stats["median"]` on peaaegu võrdsed, nagu sümmeetrilise jaotuse puhul peab.
+* **Tüüpilised väärtused.** Ühtlase jaotuse puhul ei ole ühtki tüüpilist väärtust. Kõik laoseisud vahemikus 50–500 on võrdselt tõenäolised. Pooled väärtused jäävad vahemikku `r inv_stats["Q1"]`–`r inv_stats["Q3"]`.
+* **Min ja max.** Min `r inv_stats["min"]`, max `r inv_stats["max"]`. Need on täpselt ümmargused piirid, mis viitab sellele, et väärtused on genereeritud ühtlasest jaotusest vahemikus 50–500.
+* **Erindid.** Erindeid on `r inv_stats["n_outliers"]`, sest ühtlasel jaotusel ei ole pikki sabasid.
+* **Probleemsed objektid.** Erindite mõttes probleemseid objekte ei ole. Ebarealistlik on aga jaotuse kuju ise: päris kaupluses sõltuks laoseis tootest (nt mööblit hoitakse laos vähem kui toidukaupu).
+
+### Sihttunnuse sõltuvus tootekategooriast
+
+```{r, fig.width=10, fig.height=5}
+boxplot(Units.Sold ~ Category, data = retail, col = "skyblue",
+        main = "Units sold by product category", xlab = "", ylab = "Units sold per day")
+```
+
+Müügi arvkarakteristikud kategooriate kaupa:
+
+```{r}
+round(t(sapply(split(retail$Units.Sold, retail$Category),
+               function(x) c(n = length(x), mean = mean(x), median = median(x), sd = sd(x),
+                             Q1 = unname(quantile(x, 0.25)), Q3 = unname(quantile(x, 0.75))))), 1)
+```
+
+Müügi ja tootekategooria vahel **seost ei ole**. Kõigi viie kategooria karpdiagrammid on praktiliselt identsed: mediaanid jäävad vahemikku `r min(tapply(retail$Units.Sold, retail$Category, median))`–`r max(tapply(retail$Units.Sold, retail$Category, median))` tk, kvartiilid ja haare on samad ja igas kategoorias on sarnane arv suuri väärtusi. Kategooriate keskmiste erinevus (alla 2 tk) on müügi hajuvusega (standardhälve ~`r round(sd(retail$Units.Sold))` tk) võrreldes tühine. Elektroonikat, mööblit, rõivaid, mänguasju ja toidukaupu müüakse andmete järgi ühepalju. See ei vasta päris jaekaubanduse olukorrale ja on veel üks märk sünteetilistest andmetest.
+
+<br><br>
+
+# Kokkuvõte
+
+Töös analüüsiti `r nrow(retail)` objektist koosnevat jaekaupluste müügiandmestikku (5 kauplust, 20 toodet, 731 päeva). Andmestik oli tehniliselt puhas: duplikaate, `NA` väärtusi ega tühje lahtreid ei olnud. Sisuline kontroll näitas aga mitut probleemi:
+
+* `Seasonality` ei vasta kuupäevale. See asendati kuupäevast tuletatud aastaajaga `Season`.
+* Kauplused ei ole seotud kindla piirkonnaga ja tooted ei ole seotud kindla kategooriaga.
+* `Demand.Forecast` sisaldas `r sum(na_by_var)` võimatut negatiivset väärtust ja on arvutatud tegeliku müügi põhjal. Tunnus jäeti välja.
+
+Puhastatud andmestikus on `r ncol(retail)` tunnust: `r sum(sapply(retail, is.numeric))` arvulist ja `r sum(sapply(retail, is.factor))` faktorit.
+
+Sihttunnus `Units.Sold` on paremale kaldu jaotusega (mediaan `r median(retail$Units.Sold)` tk, keskmine `r round(mean(retail$Units.Sold), 1)` tk). Ainus müüki selgitav tegur on **laoseis**: seos on positiivne (r ≈ 0,59) ja laoseis on müügi ülempiir. Hinnal, allahindlusel, tootekategoorial, kauplusel, piirkonnal, ilmal, kampaaniatel ja aastaajal müügiga seost ei ole.
+
+Andmestik on **sünteetiline** ja tunnused on genereeritud suures osas üksteisest sõltumatult. Seetõttu ei saa tulemuste põhjal teha järeldusi päris jaekaubanduse kohta. Tulevases projektis tuleks seda arvestada: müügi modelleerimisel on mõtet kasutada peamiselt laoseisu ja mudel ei saa selgitada suuremat osa müügi hajuvusest.
+
+<br><br>
+
+# Kasutatud materjalid
+
+* A. Chauhan. *Retail Store Inventory Forecasting Dataset.* Kaggle: <https://www.kaggle.com/datasets/anirudhchauhan/retail-store-inventory-forecasting-dataset>
+* O. Dunajeva. Seminaritöö 1 lahendamise näidis (NHANES andmestik), RAM0580 Andmeanalüüs.
